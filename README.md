@@ -1,8 +1,8 @@
 # Marine Data Project
 
-A reproducible Parquet layout experiment for marine observing stations. The report asks why retrieving 100 days of observations from one station can scan more data than retrieving a snapshot of a coastal area.
+This course research report studies Parquet layouts for marine observing stations through a reproducible benchmark. It asks why retrieving 100 days of observations from one station can scan more data than retrieving a snapshot of a coastal area.
 
-**Report (Chinese)** · [PDF](report/ocean_storage_experiment_report_v3.pdf) · [Markdown](report/ocean_storage_experiment_report_v3.md)
+**Course research report (Chinese)** · [PDF](report/marine_data_course_report_v3.pdf) · [Markdown](report/marine_data_course_report_v3.md)
 
 ## Experiment
 

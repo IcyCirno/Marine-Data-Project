@@ -1,4 +1,4 @@
-# 海洋测站数据在 Parquet/Iceberg 湖仓布局下的双向读放大与自适应路由优化实验报告
+# 海洋测站数据在 Parquet/Iceberg 湖仓布局下的双向读放大与自适应路由优化研究
 
 > **AI 协作与实验代码仓库**　[https://github.com/IcyCirno/Marine-Data-Project](https://github.com/IcyCirno/Marine-Data-Project)
 
