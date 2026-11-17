@@ -1,6 +1,8 @@
 # 海洋测站数据在 Parquet/Iceberg 湖仓布局下的双向读放大与自适应路由优化研究
 
 > **AI 协作与实验代码仓库**　[https://github.com/IcyCirno/Marine-Data-Project](https://github.com/IcyCirno/Marine-Data-Project)
+>
+> **AI 模型使用说明**　文档语言优化使用 ChatGPT-6.1 Sol。方案讨论、实验代码生成和报告初稿等其余创作环节使用 Gemini Hydrogen 完成。
 
 ---
 
@@ -8,7 +10,7 @@
 
 　　在海洋大数据湖仓平台中，传感器/浮标测站观测表通常采用“按天分区 + 按时间排序”的 Parquet/Iceberg 布局。该布局在面对“整片海面状空间快照（Q2）”时表现优异，但在面对“单站长时序点查（Q1）”时却会引发严重的读放大。本文首先建立 1 亿行理论基准与 1,000 万行单机缩放基准账本，揭示了在 1 亿行估算下 Q1 即使开启列裁剪与延迟物化仍存在约 **500×**（十进制）/ **524×**（二进制）的字节读放大；而在 1,000 万行本地 Parquet 实测中（以 Footer 估算的候选列块压缩量 $\div$ 未压缩有效载荷 `0.1526 MiB` 计），基准布局 `L1_time` 的 Q1 读放大高达 **816×**（`124.50 MiB`）。
 
-　　随后对比了传统 Z-order/Hilbert、自适应聚簇及架构层妥协三种路线在海洋“近岸极密、远海极疏（空间倾斜）”与“历史延迟补传/质量回填”下的失效边界；进而提出原创改进方案——**「冷热分层合并 + 冻结分位点 Hilbert 排序 + 冷区轻量级 RG 路由表」**，并给出按混合负载加权的通用定量判据公式。
+　　随后比较传统多维排序、自适应聚簇和外置索引在近岸测站密集、远海测站稀疏及历史数据回填场景下的适用边界。本文将已有的秩空间 Hilbert 排序与外置行组索引适配到固定海洋测站，设计了**冷热分层、冻结分位点表和带日期过滤的冷区行组路由**，并通过对照实验量化单站长时序查询与短时窗空间快照的读取代价。
 
 　　基于 1,000 万行（100 天 × 1,000 站，80% 近岸倾斜）模拟数据集的实测表明：本方案用 **13.40 KiB**（仅覆盖冷区的 **9,000 条**、含 `min_date`/`max_date` 日期剪枝）路由表将 Q1 候选 Row Group 从 1,000 个压低至 **109 个**，候选列块压缩量降至 **13.99 MiB**（约 **92×** 读放大，较 `L1` 缩减 **88.8%**），对象存储仿真耗时从 `2,249.0 ms` 降至 `428.0 ms`（提速 **5.25×**）；在冷区 `0.3°×0.3°` 单日查询上实现 **93.0%** 的文件内 RG 跳过率，在热区示例小时窗口（10:00–11:00）保住 **90.0%** 跳过率（`1/10` RG，`0.16 MiB`）。同时实验也客观暴露了空间换时间的必然取舍：冷区 1 小时快照读取 `1.20 MiB`，约为时间布局 `0.16 MiB` 的 **7.5×**。
 
@@ -62,19 +64,21 @@
 | **路线 2：新一代自适应聚簇**（Liquid Clustering / Sort Order） | [Delta Lake Liquid Clustering](https://delta.io/blog/liquid-clustering/) 取消 Hive 硬分区，用 Hilbert 曲线将数据动态聚簇进 Z-cubes 并支持增量重写（[Databricks 文档](https://docs.databricks.com/aws/en/tables/clustering)）；[Iceberg Table Spec](https://iceberg.apache.org/spec/) 定义 Sort Order 并配合后台合并（[S3 Sort & Z-order Compaction](https://aws.amazon.com/about-aws/whats-new/2025/06/amazon-s3-sort-z-order-compaction-apache-iceberg-tables/)） | ① **与海洋按天治理冲突**：海洋历史质控回填与 TTL 清理通常按“天”整批替换，跨天文件会让单日回填时的写放大急剧恶化；② **并发冲突与生态门槛**：高频写入下异步 Compaction 易发生提交冲突（[PuppyGraph 指南](https://www.puppygraph.com/learn/iceberg-compaction)），且单机轻量引擎无法直接依赖专有运行时。 |
 | **路线 3：架构层妥协**（外置索引 / Lance / Vortex） | 主表保留时空布局，外挂“测站→文件/行号”倒排表或利用 [Iceberg Puffin Spec](https://iceberg.apache.org/puffin-spec/) 存储扩展统计；或采用支持 $O(1)$ 随机访问的新列式格式（[Lance 论文](https://arxiv.org/html/2504.15247v1)、[LanceDB 基准](https://www.lancedb.com/blog/the-case-for-random-access-i-o)、[Vortex 架构](https://db.cs.cmu.edu/events/futuredata-vortex/) / [Vortex 官网](https://vortex.dev/)） | ① **物理行号索引脆弱**：主表一旦 Compaction 重排，绑定行号偏移的外置索引立即悬空；② **新格式治内不治外**：Lance/Vortex 虽可消除单文件内 Page 解压放大，但若文件仍按天切为 100 份，Q1 仍躲不开 100 次对象存储文件打开延迟。 |
 
+　　Qi 等人在 R-tree 批量构建中将各维坐标映射到秩空间，并比较了该空间中的 Z-order 和 Hilbert 排序［[1](https://doi.org/10.1145/3397506)］。Delta Lake 的公开实现也先将每个聚簇列映射为近似秩的范围编号，再计算 Hilbert 索引［[2](https://github.com/delta-io/delta/blob/master/spark/src/main/scala/org/apache/spark/sql/delta/skipping/MultiDimClustering.scala#L102-L108)］。Parquet 在文件元数据中保存列块的位置和大小［[3](https://parquet.apache.org/docs/file-format/metadata/)］，Apache DataFusion 则给出了根据外部索引筛选文件内行组的公开示例［[4](https://datafusion.apache.org/blog/2025/08/15/external-parquet-indexes/#pruning-parts-of-parquet-files-with-external-indexes)］。
+
 ---
 
-## 3. 原创改进方案设计、边界交锋与定量判据
+## 3. 面向固定海洋测站的布局改进与定量判据
 
 ### 3.1 核心设计：“冷热分层合并 + 冻结分位点 Hilbert 排序 + 冷区轻量级 RG 路由表”
 
-　　针对上述失效边界，本方案（`L4_ours`）由三项协同机制组成：
+　　本方案（`L4_ours`）假定测站位置在数据合并周期内保持稳定，使各批次冷数据可以复用同一张分位点表。
 
 1. **冷热分层合并（破除 100 天扇出与短时窗退化的两难）**：
    - **近 10 天热区**：热区保持与时间排序基线一致的物理布局（按天文件 + `ingest_time` 排序），示例小时窗口（10:00–11:00）候选 `1/10` RG（在 `04-06` 全天 24 个整点小时窗口遍历中，16 个候选 1 RG、8 个候选 2 RG）。
    - **前 90 天冷区**：在后台异步合并为每 10 天 1 个文件（90 天 $\rightarrow$ 9 个文件），全表文件数从 **100 个压降至 19 个**，直接削减跨文件 $L_{\text{open}}$ 扇出，同时保留周期边界以兼容回填与 TTL 清理。
 2. **冻结静态 CDF 分位点 Hilbert 桶内次级排序**：
-   - 先基于固定浮标网的历史空间分布冻结一张 **静态 CDF 分位点查找表**（257 个分位点，持久化为 `frozen_cdf_table.json`，仅 **9.94 KiB**），将 `(lat, lon)` 以 $O(\log M)$ 映射至均匀分位空间后再编码 4 阶 Hilbert 桶（256 桶）。
+   - 先基于固定浮标网的空间分布冻结一张 **静态 CDF 分位点查找表**（257 个分位点，持久化为 `frozen_cdf_table.json`，仅 **9.94 KiB**），将 `(lat, lon)` 以 $O(\log M)$ 映射至均匀分位空间后再编码 4 阶 Hilbert 桶（256 桶）。`xy2hilbert` 使用二维 Hilbert 编码中的逐位旋转与翻转，公开实现可参见文献［[5](https://people.math.sc.edu/Burkardt/c_src/hilbert_curve/hilbert_curve.html)］。
    - 冷区合并时按 **`(hilbert_bucket_q4, station_id, obs_time)`** 排序（排序后不保留额外辅助列，保持与基线一致的 7 列 Schema）：外层保证空间局部性服务 Q2，内层让同一测站的 10 天数据连续聚集在单个 RG 内。
 3. **仅覆盖冷区的轻量级 RG 粒度路由表（含日期区间剪枝）**：
    - 由于热区按 `ingest_time` 排序后每站天然分散在全部 10 个 RG 中，写入路由表纯属冗余。因此**只为冷区 9 个合并文件构建 `(station_id, file_name, rg_id, min_date, max_date)` 瘦 Parquet 路由表**（共 **9,000 条**，仅 **13.40 KiB**）。查询前先按 `station_id` 与 `[date_start, date_end]` 交集过滤冷文件（仅查热区或越界日期直接跳过全部冷文件），热区直接走 Dataset 分区/谓词扫描。
@@ -84,7 +88,7 @@
 1. **质疑一（跨文件扇出与 RG 内混杂）**：保留按天分区救不了 100 次文件打开，且 RG 内仍混有多个测站 $\rightarrow$ **修正**：前 90 天每 10 天合并将文件数压至 19 个，并在桶内追加 `(station_id, obs_time)` 次级排序。
 2. **质疑二（Quantile Drift 分位点漂移）**：流式写入下各批数据分布不同，Two-pass 动态算分位数会导致编码漂移 $\rightarrow$ **反驳与定型**：固定浮标网在月/季度尺度上是准静态的，采用**冻结静态 CDF 查找表**实现无状态 $O(\log M)$ 映射；**跨批次 CDF 读取、分布漂移监控与触发异步重算属于生产部署架构设计**。
 3. **质疑三（路由表膨胀与一致性窗口）**：移动测站下路由表可能膨胀，外置表存在悬空窗口 $\rightarrow$ **界定与吸收**：本方案定位于固定测站网，且只覆盖冷区（仅 **13.40 KiB**）；**在生产环境中将路由表绑定 [Iceberg Puffin Spec](https://iceberg.apache.org/puffin-spec/) 随快照原子发布属于部署架构设计**。
-4. **质疑四（SQL 引擎接口断层）**：通用 SQL/Dataset 引擎默认只按文件+Min-Max 裁剪，吃不下外部传入的 `rg_id` 列表 $\rightarrow$ **转化为双路径实验**：同时评测路径一（Dataset 通用谓词下推）与路径二（`ParquetFile.read_row_groups` 冷区精确路由 + 热区 Dataset）。
+4. **质疑四（SQL 引擎接口断层）**：本实验的 Dataset 谓词扫描路径没有接入外部 `rg_id` 列表，因此分别评测两条路径。路径一使用 Dataset 通用谓词下推。路径二调用 PyArrow 的 `ParquetFile.read_row_groups` 读取指定的冷区行组，热区仍走 Dataset 扫描［[6](https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html#pyarrow.parquet.ParquetFile.read_row_groups)］。
 
 ### 3.3 按混合负载加权的通用定量判据公式
 
@@ -186,3 +190,17 @@ $$N_{\mathrm{Q}} \sum_{q} p_q \left( T_{\mathrm{base}, q} - T_{\mathrm{ours}, q}
 1. **写入与存储代价**：全表写入耗时从 `L1_time` 的 `5.66 s` 增至 `11.13 s`（**1.97×**），总存储体积从 `195.37 MiB` 增至 `248.44 MiB`（**+27.2%**），主要由冷区跨天多列重排及其对时间列字典/游程局部性的影响所致。
 2. **空间换时间的必然取舍**：冷区 1 小时快照（`Q2_cold_hour`）读取 `1.20 MiB`，约为时间布局 `L1_time`（`0.16 MiB`）的 **7.5×**；本方案以“近 10 天热区保时窗 + 历史冷区保单站与空间聚合”，**在所测混合负载中取得更好的读写折中**。
 3. **适用边界与未来演进**：本方案适用于读多写少、固定测站网场景，不适用于高频写少读或高移动性轨迹（如全球 AIS 船舶）。生产级落地可结合 [Iceberg Puffin Spec](https://iceberg.apache.org/puffin-spec/) 实现路由表与快照的原子发布，并探索将冷区底层文件替换为 [Vortex](https://vortex.dev/) 或 [Lance](https://github.com/lance-format/lance) 以进一步压低 RG 内部随机点查的页解码放大。
+
+## 参考文献
+
+[1] Qi J, Tao Y, Chang Y, Zhang R. Packing R-trees with Space-Filling Curves: Theoretical Optimality, Empirical Efficiency, and Bulk-Loading Parallelizability. *ACM Transactions on Database Systems*, 2020, 45(3), Article 14. [DOI: 10.1145/3397506](https://doi.org/10.1145/3397506).
+
+[2] Delta Lake Project. HilbertClustering 与范围编号函数的开源实现. [MultiDimClustering.scala](https://github.com/delta-io/delta/blob/master/spark/src/main/scala/org/apache/spark/sql/delta/skipping/MultiDimClustering.scala#L102-L108) · [MultiDimClusteringFunctions.scala](https://github.com/delta-io/delta/blob/master/spark/src/main/scala/org/apache/spark/sql/delta/skipping/MultiDimClusteringFunctions.scala#L30-L39).
+
+[3] Apache Parquet. [File Format: Metadata](https://parquet.apache.org/docs/file-format/metadata/).
+
+[4] Lamb A. [Using External Indexes, Metadata Stores, Catalogs and Caches to Accelerate Queries on Apache Parquet](https://datafusion.apache.org/blog/2025/08/15/external-parquet-indexes/#pruning-parts-of-parquet-files-with-external-indexes). Apache DataFusion, 2025.
+
+[5] Burkardt J. [HILBERT_CURVE: Convert between 1D and 2D coordinates of Hilbert Curve](https://people.math.sc.edu/Burkardt/c_src/hilbert_curve/hilbert_curve.html). C library, 2015.
+
+[6] Apache Arrow. [`pyarrow.parquet.ParquetFile.read_row_groups`](https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html#pyarrow.parquet.ParquetFile.read_row_groups). PyArrow API reference.
