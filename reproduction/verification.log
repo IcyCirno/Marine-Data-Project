@@ -1,0 +1,22 @@
+Q1 full range: 5 paths return the same 10,000 rows and values
+All 4 layouts have 10,000,000 rows and matching 7-column schema
+Q1 hot-only: identical 100 rows, 0 cold RGs read in 0 cold data files; 1 cold route table lookups
+Q1 one cold day: identical 100 rows, 1 cold RGs read in 1 cold data files; 1 cold route table lookups
+Q1 two cold chunks: identical 200 rows, 2 cold RGs read in 2 cold data files; 1 cold route table lookups
+Q1 cold/hot boundary: identical 200 rows, 1 cold RGs read in 1 cold data files; 1 cold route table lookups
+Q1 no matching dates: identical 0 rows, 0 cold RGs read in 0 cold data files; 1 cold route table lookups
+Q1 missing station: identical 0 rows, 0 cold RGs read in 0 cold data files; 1 cold route table lookups
+Cold route intervals: all 9,000 entries match their files' actual date bounds
+Cold route: 9,000 unique and correct mappings, 13,682 bytes
+Hot layout: every one of the 100 hot RGs contains all 1,000 stations
+CDF: 257 lat and 257 lon boundaries, 10,174 bytes
+Q2 cold day: four layouts return identical 2,300 rows
+Q2 cold day: three ablation variants return the same rows
+Q2 cold hour: four layouts return identical 92 rows
+Q2 hot day: four layouts return identical 2,300 rows
+Q2 hot hour: four layouts return identical 92 rows
+Hot day 04-06, candidates over 24 hourly windows: {1: 16, 2: 8}
+Compressed column chunk totals (MiB) across all files
+  L1_time: station_id=15.9024, obs_time=15.3961, event_date=0.0896, ingest_time=30.4630, lat=19.6695, lon=19.6696, sst=93.1101
+  L4_ours: station_id=1.7334, obs_time=71.5388, event_date=0.1750, ingest_time=76.7671, lat=2.1429, lon=2.1429, sst=93.1101
+  Total increase=53.3100 MiB; timestamp columns=102.4469 MiB (192.2% of column chunk increase)

@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+/reproduction/data/
+/reproduction/plots/
+/exp_ocean_data/
+/exp_plots/
